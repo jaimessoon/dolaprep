@@ -18,9 +18,7 @@ XML_NAME = "haarcascade_frontalface_default.xml"
 
 @st.cache_resource
 def load_face_cascade():
-    """Locates or downloads the Haar Cascade file safely on the server."""
     cascade_path = os.path.join(cv2.data.haarcascades, XML_NAME)
-
     if not os.path.exists(cascade_path):
         url = f"https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/{XML_NAME}"
         try:
@@ -28,98 +26,32 @@ def load_face_cascade():
             cascade_path = XML_NAME
         except Exception:
             return None
-
     return cv2.CascadeClassifier(cascade_path)
 
 
 face_cascade = load_face_cascade()
 
 # -------------------------------------------------------------------------
-# Processing Functions
+# Core Helper Pixelation Function
 # -------------------------------------------------------------------------
 
 
-def pixelate_face_only(image, blocks=10):
-    """Detects faces and pixelates ONLY the bounding box areas securely."""
-    rgb_img = image.convert("RGB")
-    cv_img = np.array(rgb_img)
-    cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
+def apply_pixelation_to_box(cv_img, x1, y1, x2, y2, blocks):
+    """Helper to heavily pixelate a specific box region safely."""
+    if (x2 - x1) <= 0 or (y2 - y1) <= 0:
+        return cv_img
 
-    h, w = cv_img.shape[:2]
+    face_roi = cv_img[y1:y2, x1:x2]
+    bw = max(1, (x2 - x1) // blocks)
+    bh = max(1, (y2 - y1) // blocks)
 
-    if face_cascade is None or face_cascade.empty():
-        st.error("Face detector model could not be loaded on the server.")
-        return cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-
-    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(
-        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    small = cv2.resize(face_roi, (bw, bh), interpolation=cv2.INTER_LINEAR)
+    pixelated_roi = cv2.resize(
+        small, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST
     )
 
-    if len(faces) == 0:
-        st.warning(
-            "No distinct faces detected on the left image. Showing original background."
-        )
-        return cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-
-    for x, y, fw, fh in faces:
-        # Standardize coordinates within image bounds to prevent out-of-index crashes
-        x1 = max(0, x)
-        y1 = max(0, y)
-        x2 = min(w, x + fw)
-        y2 = min(h, y + fh)
-
-        if (x2 - x1) <= 0 or (y2 - y1) <= 0:
-            continue
-
-        face_roi = cv_img[y1:y2, x1:x2]
-
-        # Calculate block downsampling steps
-        bw = max(1, (x2 - x1) // blocks)
-        bh = max(1, (y2 - y1) // blocks)
-
-        # Apply block rendering
-        small = cv2.resize(face_roi, (bw, bh), interpolation=cv2.INTER_LINEAR)
-        pixelated_roi = cv2.resize(
-            small, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST
-        )
-
-        # Paste pixelated region back into the background frame
-        cv_img[y1:y2, x1:x2] = pixelated_roi
-
-    return cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-
-
-def color_pencil_sketch(image):
-    """Creates a beautiful color pencil effect that guarantees high face recognizability
-
-    by blending sketch outlines over the original vivid image layers.
-    """
-    rgb_img = image.convert("RGB")
-    cv_img = np.array(rgb_img)
-    cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
-
-    try:
-        # 1. Generate a clean grayscale pencil sketch (isolating the lines)
-        gray_sketch, _ = cv2.pencilSketch(
-            cv_img, sigma_s=30, sigma_r=0.07, shade_factor=0.03
-        )
-
-        # 2. Convert the single-channel grayscale sketch back to 3-channel BGR
-        sketch_bgr = cv2.cvtColor(gray_sketch, cv2.COLOR_GRAY2BGR)
-
-        # 3. Blend the outlines directly with the original image
-        # cv2.multiply mixes the dark pencil lines on top of the original colors
-        blended = cv2.multiply(cv_img, sketch_bgr, scale=1.0 / 255.0)
-
-        # 4. Mix 70% blended sketch + 30% original crisp image color to ensure high recognition
-        final_result = cv2.addWeighted(blended, 0.7, cv_img, 0.3, 0)
-
-        return cv2.cvtColor(final_result, cv2.COLOR_BGR2RGB)
-
-    except Exception:
-        # Fallback if processing encounters an unexpected matrix issue
-        return cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+    cv_img[y1:y2, x1:x2] = pixelated_roi
+    return cv_img
 
 
 # -------------------------------------------------------------------------
@@ -129,7 +61,7 @@ def color_pencil_sketch(image):
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Left Side Filter")
+    st.subheader("Left Side: Face Pixelation")
     left_file = st.file_uploader(
         "Upload Image to Pixelate Face",
         type=["jpg", "jpeg", "png"],
@@ -138,17 +70,74 @@ with col1:
 
     if left_file is not None:
         try:
-            left_img = Image.open(left_file)
-            # blocks=8 ensures heavy, unidentifiable blocks over the face coordinates
-            pixelated_result = pixelate_face_only(left_img, blocks=8)
-            st.image(pixelated_result, use_container_width=True)
+            left_img = Image.open(left_file).convert("RGB")
+            cv_img = np.array(left_img)
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
+            h, w = cv_img.shape[:2]
+
+            # 1. Run AI Detection
+            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+            faces = []
+            if face_cascade is not None and not face_cascade.empty():
+                faces = face_cascade.detectMultiScale(
+                    gray, scaleFactor=1.05, minNeighbors=4, minSize=(30, 30)
+                )
+
+            # 2. Check if AI found a face
+            ai_found = len(faces) > 0
+
+            # 3. Add control toggles in a clean expander box below the uploader
+            with st.expander("Adjustment Settings", expanded=not ai_found):
+                use_manual = st.checkbox(
+                    "Enable Manual Override Box", value=not ai_found
+                )
+                pixel_strength = st.slider(
+                    "Pixel Size (Lower = More Blurry)", 4, 30, 8
+                )
+
+                if use_manual:
+                    st.info(
+                        "Adjust sliders below to move the box directly over the face if the AI missed it."
+                    )
+                    # Create sliders proportional to the uploaded photo size
+                    box_size = st.slider("Box Size", 10, min(w, h), int(min(w, h) * 0.3))
+                    center_x = st.slider("Move Horizontal (X)", 0, w, int(w * 0.5))
+                    center_y = st.slider("Move Vertical (Y)", 0, h, int(h * 0.4))
+
+                    # Calculate box coordinates based on manual sliders
+                    mx1 = max(0, center_x - box_size // 2)
+                    my1 = max(0, center_y - box_size // 2)
+                    mx2 = min(w, center_x + box_size // 2)
+                    my2 = min(h, center_y + box_size // 2)
+
+            # 4. Process image based on chosen method
+            if use_manual:
+                cv_img = apply_pixelation_to_box(
+                    cv_img, mx1, my1, mx2, my2, blocks=pixel_strength
+                )
+            elif ai_found:
+                for x, y, fw, fh in faces:
+                    x1, y1 = max(0, x), max(0, y)
+                    x2, y2 = min(w, x + fw), min(h, y + fh)
+                    cv_img = apply_pixelation_to_box(
+                        cv_img, x1, y1, x2, y2, blocks=pixel_strength
+                    )
+            else:
+                st.warning(
+                    "AI could not detect your face structure. Please check 'Enable Manual Override Box' above to position it manually!"
+                )
+
+            # 5. Render Final Output
+            final_left = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+            st.image(final_left, use_container_width=True)
+
         except Exception as e:
             st.error(f"Error handling left image: {e}")
     else:
         st.info("Awaiting left side picture choice...")
 
 with col2:
-    st.subheader("Right Side Filter")
+    st.subheader("Right Side: Sketch Filter")
     right_file = st.file_uploader(
         "Upload Image for Sketch Filter",
         type=["jpg", "jpeg", "png"],
@@ -157,9 +146,20 @@ with col2:
 
     if right_file is not None:
         try:
-            right_img = Image.open(right_file)
-            sketch_result = color_pencil_sketch(right_img)
-            st.image(sketch_result, use_container_width=True)
+            right_img = Image.open(right_file).convert("RGB")
+            cv_img_r = np.array(right_img)
+            cv_img_r = cv2.cvtColor(cv_img_r, cv2.COLOR_RGB2BGR)
+
+            # Beautiful blended sketch effect that preserves distinct color recognition
+            gray_sketch, _ = cv2.pencilSketch(
+                cv_img_r, sigma_s=30, sigma_r=0.07, shade_factor=0.03
+            )
+            sketch_bgr = cv2.cvtColor(gray_sketch, cv2.COLOR_GRAY2BGR)
+            blended = cv2.multiply(cv_img_r, sketch_bgr, scale=1.0 / 255.0)
+            final_right_cv = cv2.addWeighted(blended, 0.7, cv_img_r, 0.3, 0)
+
+            final_right = cv2.cvtColor(final_right_cv, cv2.COLOR_BGR2RGB)
+            st.image(final_right, use_container_width=True)
         except Exception as e:
             st.error(f"Error handling right image: {e}")
     else:
