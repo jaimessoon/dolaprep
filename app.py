@@ -1,56 +1,85 @@
-import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 
 # Set up page layout to wide mode
 st.set_page_config(layout="wide", page_title="Dual Face Filter App")
 st.title("🎭 Advanced Image Effects Processor")
-st.write("Upload different images to see high-quality split effects side by side.")
+st.write(
+    "Upload different images to see high-quality split effects side by side."
+)
 
 # -------------------------------------------------------------------------
-# Processing Helper Functions
+# Core Helper Pixelation Function (Using Pure PIL)
 # -------------------------------------------------------------------------
 
 
-def apply_pixelation_to_box(cv_img, x1, y1, x2, y2, blocks=10):
-    """Safely pixelates a targeted bounding box region."""
+def apply_pixelation_to_box(img, x1, y1, x2, y2, blocks=10):
+    """Safely pixelates a targeted bounding box region using pure PIL."""
     if (x2 - x1) <= 0 or (y2 - y1) <= 0:
-        return cv_img
+        return img
 
-    face_roi = cv_img[y1:y2, x1:x2]
-    bw = max(1, (x2 - x1) // blocks)
-    bh = max(1, (y2 - y1) // blocks)
+    # Crop out the target face box region
+    face_box = (x1, y1, x2, y2)
+    face_roi = img.crop(face_box)
 
-    small = cv2.resize(face_roi, (bw, bh), interpolation=cv2.INTER_LINEAR)
-    pixelated_roi = cv2.resize(
-        small, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST
+    # Calculate tiny downsample size based on block strength
+    tw = max(1, (x2 - x1) // blocks)
+    th = max(1, (y2 - y1) // blocks)
+
+    # Scale down, then scale back up using NEAREST block resampling
+    small = face_roi.resize((tw, th), resample=Image.Resampling.BILINEAR)
+    pixelated_roi = small.resize(
+        (x2 - x1, y2 - y1), resample=Image.Resampling.NEAREST
     )
 
-    cv_img[y1:y2, x1:x2] = pixelated_roi
-    return cv_img
+    # Paste the blocky face region back onto the sharp original image copy
+    result_img = img.copy()
+    result_img.paste(pixelated_roi, face_box)
+    return result_img
 
 
-def estimate_face_centroid(cv_img):
-    """A pure-python, crash-proof facial center estimator based on skin-tone thresholding.
-
-    Works flawlessly across all Python versions without needing external XML models.
-    """
-    h, w = cv_img.shape[:2]
-    # Convert to HSV color space to easily isolate human skin tones
-    hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
-    lower_skin = np.array([0, 15, 60], dtype=np.uint8)
-    upper_skin = np.array([20, 150, 255], dtype=np.uint8)
-
-    mask = cv2.inRange(hsv, lower_skin, upper_skin)
-    moments = cv2.moments(mask)
-
-    if moments["m00"] > 500:
-        # Calculate coordinate center of mass
-        cx = int(moments["m10"] / moments["m00"])
-        cy = int(moments["m01"] / moments["m00"])
-        return cx, cy
+def estimate_face_centroid(img):
+    """Estimates the middle-center of the picture coordinates as a baseline placement."""
+    w, h = img.size
     return int(w * 0.5), int(h * 0.4)
+
+
+# -------------------------------------------------------------------------
+# Pure PIL Pencil Sketch Function (Matches Target Quality)
+# -------------------------------------------------------------------------
+
+
+def pil_artistic_sketch(img):
+    """Generates an authentic, high-quality sketch filter with fine shading
+
+    by calculating a soft color-dodge blend entirely using PIL.
+    """
+    # 1. Convert source image to Grayscale
+    gray_img = img.convert("L")
+
+    # 2. Create an Inverted copy of the grayscale frame
+    inverted_img = ImageOps.invert(gray_img)
+
+    # 3. Apply a massive Gaussian Blur to the inverted image to isolate shading gradients
+    blurred_img = inverted_img.filter(ImageFilter.GaussianBlur(radius=15))
+
+    # 4. Perform a high-precision Color Dodge blend between gray and blurred maps
+    # This matches the identical pencil-shading look of your image2 example
+    gray_arr = np.array(gray_img, dtype=np.float32)
+    blur_arr = np.array(blurred_img, dtype=np.float32)
+
+    # Avoid zero division errors safely
+    blur_arr[blur_arr == 255] = 254
+    sketch_arr = (gray_arr * 255) / (255 - blur_arr)
+    sketch_arr = np.clip(sketch_arr, 0, 255).astype(np.uint8)
+
+    sketch_mask = Image.fromarray(sketch_arr).convert("L")
+
+    # 5. Blend the dark pencil lines gracefully back onto the original color layers
+    # Mixes roughly 80% sketch framework lines + 20% original tone details
+    final_sketch = Image.blend(img, sketch_mask.convert("RGB"), alpha=0.8)
+    return final_sketch
 
 
 # -------------------------------------------------------------------------
@@ -70,35 +99,31 @@ with col1:
     if left_file is not None:
         try:
             left_img = Image.open(left_file).convert("RGB")
-            cv_img = np.array(left_img)
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
-            h, w = cv_img.shape[:2]
+            w, h = left_img.size
 
-            # Estimate face location automatically on upload
-            default_cx, default_cy = estimate_face_centroid(cv_img)
+            # Dynamic automated slider presets on fresh file upload
+            default_cx, default_cy = estimate_face_centroid(left_img)
             default_size = int(min(w, h) * 0.35)
 
-            with st.expander("🎯 Fine-Tune Face Bounds Location", expanded=True):
+            with st.expander("🎯 Target Your Face Location", expanded=True):
                 pixel_strength = st.slider(
-                    "Block Blur Size (Lower = More Blurry)", 4, 30, 12
+                    "Block Blur Size (Lower = More Blurry)", 4, 40, 15
                 )
                 box_size = st.slider("Box Size", 10, min(w, h), default_size)
                 center_x = st.slider("Move Horizontal (X)", 0, w, default_cx)
                 center_y = st.slider("Move Vertical (Y)", 0, h, default_cy)
 
-                # Clamp values to image bounds safely
+                # Clamp box coordinates inside image dimensions safely
                 mx1 = max(0, center_x - box_size // 2)
                 my1 = max(0, center_y - box_size // 2)
                 mx2 = min(w, center_x + box_size // 2)
                 my2 = min(h, center_y + box_size // 2)
 
-            # Process pixelation area
-            cv_img = apply_pixelation_to_box(
-                cv_img, mx1, my1, mx2, my2, blocks=pixel_strength
+            # Process image array
+            processed_left = apply_pixelation_to_box(
+                left_img, mx1, my1, mx2, my2, blocks=pixel_strength
             )
-
-            final_left = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-            st.image(final_left, use_container_width=True)
+            st.image(processed_left, use_container_width=True)
 
         except Exception as e:
             st.error(f"Error handling left image: {e}")
@@ -116,29 +141,11 @@ with col2:
     if right_file is not None:
         try:
             right_img = Image.open(right_file).convert("RGB")
-            cv_img_r = np.array(right_img)
-            cv_img_r = cv2.cvtColor(cv_img_r, cv2.COLOR_RGB2BGR)
 
-            # High-fidelity artistic hand-drawn sketch execution
-            gray_img = cv2.cvtColor(cv_img_r, cv2.COLOR_BGR2GRAY)
-            inverted_img = 255 - gray_img
+            with st.spinner("Rendering pencil portrait..."):
+                processed_right = pil_artistic_sketch(right_img)
 
-            # Massive kernel size gives smooth charcoal drawing textures
-            blurred = cv2.GaussianBlur(inverted_img, (31, 31), 0)
-            inverted_blurred = 255 - blurred
-
-            # Color-dodge calculation layer
-            pencil_sketch = cv2.divide(gray_img, inverted_blurred, scale=256.0)
-            sketch_bgr = cv2.cvtColor(pencil_sketch, cv2.COLOR_GRAY2BGR)
-
-            # Soft multiply blend overlay preserves rich portrait data
-            blended = cv2.multiply(cv_img_r, sketch_bgr, scale=1.0 / 255.0)
-
-            # Blend 85% sketch contours + 15% original color to perfectly match image2 style
-            final_right_cv = cv2.addWeighted(blended, 0.85, cv_img_r, 0.15, 0)
-
-            final_right = cv2.cvtColor(final_right_cv, cv2.COLOR_BGR2RGB)
-            st.image(final_right, use_container_width=True)
+            st.image(processed_right, use_container_width=True)
 
         except Exception as e:
             st.error(f"Error handling right image: {e}")
