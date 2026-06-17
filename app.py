@@ -13,7 +13,7 @@ st.write("Upload different images to see high-quality split effects side by side
 # -------------------------------------------------------------------------
 
 
-def apply_pixelation_to_box(cv_img, x1, y1, x2, y2, blocks=8):
+def apply_pixelation_to_box(cv_img, x1, y1, x2, y2, blocks=10):
     """Safely pixelates a targeted bounding box region."""
     if (x2 - x1) <= 0 or (y2 - y1) <= 0:
         return cv_img
@@ -52,22 +52,22 @@ with col1:
             cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
             h, w = cv_img.shape[:2]
 
-            # Interactive adjustment settings directly in the view pane
+            # Interactive adjustment sliders directly over the viewport
             with st.expander("🎯 Position the Pixelation Box", expanded=True):
                 pixel_strength = st.slider(
-                    "Block Blur Size (Lower = Core Blur)", 4, 30, 10
+                    "Block Blur Size (Lower = More Blurry)", 4, 30, 10
                 )
                 box_size = st.slider("Box Size", 10, min(w, h), int(min(w, h) * 0.3))
                 center_x = st.slider("Move Horizontal (X)", 0, w, int(w * 0.5))
                 center_y = st.slider("Move Vertical (Y)", 0, h, int(h * 0.4))
 
-                # Calculate absolute box dimensions
+                # Calculate box edges securely
                 mx1 = max(0, center_x - box_size // 2)
                 my1 = max(0, center_y - box_size // 2)
                 mx2 = min(w, center_x + box_size // 2)
                 my2 = min(h, center_y + box_size // 2)
 
-            # Apply stable array matrix pixelation
+            # Process left matrix frame
             cv_img = apply_pixelation_to_box(
                 cv_img, mx1, my1, mx2, my2, blocks=pixel_strength
             )
@@ -94,19 +94,23 @@ with col2:
             cv_img_r = np.array(right_img)
             cv_img_r = cv2.cvtColor(cv_img_r, cv2.COLOR_RGB2BGR)
 
-            # High-fidelity procedural pencil shading network emulation
+            # High-fidelity artistic hand-drawn sketch engine emulation
             gray_img = cv2.cvtColor(cv_img_r, cv2.COLOR_BGR2GRAY)
             inverted_img = 255 - gray_img
-            blurred = cv2.GaussianBlur(inverted_img, (21, 21), 0)
-            inverted_blurred = 255 - blurred
-            pencil_sketch = cv2.divide(gray_img, inverted_blurred, scale=256.0)
 
-            # Structural line overlay reconstruction
+            # Controlled Gaussian Blur pass extracts fine hand-drawn gradients
+            blurred = cv2.GaussianBlur(inverted_img, (31, 31), 0)
+            inverted_blurred = 255 - blurred
+
+            # Mathematical dodge layer creates smooth pencil cross-hatching tones
+            pencil_sketch = cv2.divide(gray_img, inverted_blurred, scale=256.0)
             sketch_bgr = cv2.cvtColor(pencil_sketch, cv2.COLOR_GRAY2BGR)
+
+            # Soft multiply blend overlay preserves authentic rich skin details
             blended = cv2.multiply(cv_img_r, sketch_bgr, scale=1.0 / 255.0)
 
-            # Weighted blending layer to maximize target identification
-            final_right_cv = cv2.addWeighted(blended, 0.75, cv_img_r, 0.25, 0)
+            # Mix 80% sketch framework + 20% original facial lines for perfect recognition
+            final_right_cv = cv2.addWeighted(blended, 0.8, cv_img_r, 0.2, 0)
 
             final_right = cv2.cvtColor(final_right_cv, cv2.COLOR_BGR2RGB)
             st.image(final_right, use_container_width=True)
