@@ -8,25 +8,51 @@ st.set_page_config(layout="wide", page_title="Dual Face Filter App")
 st.title("🎭 Dual Image Effects Processor")
 st.write("Upload an image to see the split effects.")
 
+# Load the built-in OpenCV face detector
+# (Haar Cascade is lightweight and comes pre-packaged with cv2)
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
 # -------------------------------------------------------------------------
 # Image Processing Functions
 # -------------------------------------------------------------------------
 
 
-def pixelate_image(image, blocks=10):
-    """Pixelates the entire image heavily by downsizing and upsizing."""
+def pixelate_face_only(image, blocks=8):
+    """Detects faces and pixelates only the detected face bounding boxes."""
+    # Convert PIL to OpenCV BGR format
     cv_img = np.array(image.convert("RGB"))
     cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
 
-    # Get original size
-    h, w = cv_img.shape[:2]
+    # Detect faces
+    faces = face_cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    )
 
-    # Resize down to a very small size, then scale back up to create blocks
-    # Using 'blocks' to control intensity. Lower blocks = more pixelated.
-    small = cv2.resize(cv_img, (blocks, blocks), interpolation=cv2.INTER_LINEAR)
-    pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+    # If no faces are found, return the original image
+    if len(faces) == 0:
+        st.warning("No faces detected on the left image. Showing original.")
+        return cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
 
-    return cv2.cvtColor(pixelated, cv2.COLOR_BGR2RGB)
+    # Loop through each detected face and pixelate that region
+    for x, y, w, h in faces:
+        # Extract the face Region of Interest (ROI)
+        face_roi = cv_img[y : y + h, x : x + w]
+
+        # Downsample and upsample the face to create the blocky pixel effect
+        # We ensure blocks width/height don't drop to 0
+        bw = max(1, w // blocks)
+        bh = max(1, h // blocks)
+
+        small = cv2.resize(face_roi, (bw, bh), interpolation=cv2.INTER_LINEAR)
+        pixelated_roi = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        # Paste the pixelated face back into the original image
+        cv_img[y : y + h, x : x + w] = pixelated_roi
+
+    return cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
 
 
 def color_pencil_sketch(image):
@@ -34,7 +60,7 @@ def color_pencil_sketch(image):
     cv_img = np.array(image.convert("RGB"))
     cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
 
-    # Pencil sketch filter gives two outputs: grayscale sketch and color sketch
+    # Pencil sketch filter
     _, color_sketch = cv2.pencilSketch(
         cv_img, sigma_s=50, sigma_r=0.05, shade_factor=0.04
     )
@@ -51,21 +77,18 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    # Load the uploaded image
     img = Image.open(uploaded_file)
 
-    # Create two columns for the side-by-side layout
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("Left: Unrecognizable (Pixelated)")
-        # Run pixelation function (blocks=12 ensures heavy blurring)
-        pixelated_result = pixelate_image(img, blocks=12)
+        st.subheader("Left: Face Pixelated Only")
+        # Blocks parameter controls intensity. Lower = more pixelated/unrecognizable.
+        pixelated_result = pixelate_face_only(img, blocks=12)
         st.image(pixelated_result, use_container_width=True)
 
     with col2:
-        st.subheader("Right: Color-Penciled (Recognizable)")
-        # Run color pencil function
+        st.subheader("Right: Color-Penciled (Whole Image)")
         sketch_result = color_pencil_sketch(img)
         st.image(sketch_result, use_container_width=True)
 else:
